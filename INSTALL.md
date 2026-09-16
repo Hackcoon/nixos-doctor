@@ -36,7 +36,7 @@ they are not all required for the tool to run.
 Clone the repository and run the executable directly:
 
 ```sh
-git clone https://github.com/OWNER/nixos-doctor.git ~/src/nixos-doctor
+git clone https://github.com/Hackcoon/nixos-doctor.git ~/src/nixos-doctor
 cd ~/src/nixos-doctor
 ./nixos-doctor --help
 ./nixos-doctor --json
@@ -101,8 +101,8 @@ nixos-doctor --help
 From a hosted GitHub repository:
 
 ```sh
-nix run github:OWNER/nixos-doctor -- --json
-nix profile install github:OWNER/nixos-doctor
+nix run github:Hackcoon/nixos-doctor -- --json
+nix profile install github:Hackcoon/nixos-doctor
 ```
 
 The flake package installs the engine, checks, TUI, bundle exporter, backup
@@ -117,7 +117,7 @@ through a flake input and add it to `environment.systemPackages`:
 
 ```nix
 {
-  inputs.nixos-doctor.url = "github:OWNER/nixos-doctor";
+  inputs.nixos-doctor.url = "github:Hackcoon/nixos-doctor";
 
   outputs = { self, nixpkgs, nixos-doctor, ... }:
     {

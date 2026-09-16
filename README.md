@@ -154,7 +154,7 @@ nix profile install .
 ```
 
 `nix build` produces the package without installing it. A hosted repository can
-be installed with the equivalent `github:OWNER/nixos-doctor` flake reference.
+be installed with the equivalent `github:Hackcoon/nixos-doctor` flake reference.
 
 ## Files
 
