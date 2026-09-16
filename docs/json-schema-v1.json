@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/nixos-doctor/json-schema-v1",
+  "title": "nixos-doctor schema v1 report",
+  "type": "object",
+  "required": ["tool", "version", "schema_version", "summary", "findings"],
+  "properties": {
+    "tool": { "const": "nixos-doctor" },
+    "version": { "type": "string" },
+    "schema_version": { "const": 1 },
+    "summary": { "$ref": "#/$defs/summary" },
+    "findings": { "$ref": "#/$defs/findings" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "summary": {
+      "type": "object",
+      "required": ["pass", "warn", "fail", "skip", "error", "unknown"],
+      "properties": {
+        "pass": { "type": "integer", "minimum": 0 },
+        "warn": { "type": "integer", "minimum": 0 },
+        "fail": { "type": "integer", "minimum": 0 },
+        "skip": { "type": "integer", "minimum": 0 },
+        "error": { "type": "integer", "minimum": 0 },
+        "unknown": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "finding": {
+      "type": "object",
+      "required": ["severity", "area", "check", "scope", "confidence", "reason", "requires", "message", "fix", "fix_id", "fix_args", "evidence"],
+      "properties": {
+        "severity": { "enum": ["PASS", "WARN", "FAIL", "SKIP", "ERROR", "UNKNOWN"] },
+        "area": { "type": "string" },
+        "check": { "type": "string" },
+        "scope": { "enum": ["system", "user", "hardware", "session", "unknown"] },
+        "confidence": { "enum": ["high", "medium", "low"] },
+        "reason": { "type": "string" },
+        "requires": { "type": "string" },
+        "message": { "type": "string" },
+        "fix": { "type": "string" },
+        "fix_id": { "type": "string" },
+        "fix_args": { "type": "array", "items": { "type": "string" } },
+        "evidence": { "$ref": "#/$defs/evidence" }
+      },
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["available"],
+      "properties": {
+        "available": { "type": "boolean" },
+        "command": { "type": "string" },
+        "exit_code": { "type": "integer" },
+        "output": { "type": "string", "maxLength": 4096 },
+        "source": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,516 @@
+#!/usr/bin/env bash
+# nixos-doctor 1.0.0 — report-first NixOS health checker.
+#
+# Usage:
+#   nixos-doctor [area...] [flags]
+#   nixos-doctor help [topic]      (topic = area name or flag, e.g. help store)
+#
+# Areas (default: all):
+#   boot generations store services journal hardware network audio
+#   graphics gaming hyprland kde dms power time disk memory flake home
+#   secrets containers security updates bootperf rebuild backups
+#   secureboot systemd nix
+#
+# Flags:
+#   --fix-safe     auto-apply Tier-1 fixes only (GC without -d, journal
+#                  vacuum, daemon-reload, safe service restarts,
+#                  reset-failed, baloo suspend). Everything else is reported.
+#                  Ignored together with --json (inspect data first).
+#   --deep         include slow checks (currently: store verify --all).
+#   --sudo         enable root checks via sudo -n (never prompts for a
+#                  password; root checks SKIP without it).
+#   --json         machine-readable schema-v2 output (for scripts and AI).
+#   --json-v1      compatibility output using the schema-v1 top-level shape.
+#   --interactive  menu: pick an area, tick findings, confirm each fix.
+#                  Tier-2 actions are shown for manual execution; only
+#                  structured Tier-1 actions can run from the TUI.
+#   backup        local-first Git backup; use `backup --help` for details.
+#   --bundle       write /tmp/nixos-doctor-*.tar.gz with logs for AI review.
+#                  Never uploads anything; review before sharing.
+#   --help, -h     this text.  --version  version.
+#
+# Exit codes: 0 all pass · 1 warnings · 2 failures/errors.
+#
+# Examples:
+#   nixos-doctor                    full sweep, changes nothing
+#   nixos-doctor services journal   only these areas
+#   nixos-doctor --interactive      fix things with confirmation
+#   nixos-doctor boot --fix-safe    sweep boot, auto-apply safe fixes
+#   nixos-doctor --bundle           collect logs to hand to an AI
+#
+# Policy: report-first. Tier-2 actions (rebuild, rollback, repair,
+# nix-collect-garbage -d, reboot, bootloader/firmware/driver changes)
+# always ask. Applied fixes are logged to
+# ~/.local/state/nixos-doctor.log.
+# Docs: ~/nixos-doctor/README.md, PLAN.md, AI-RUNBOOK.md.
+set -u
+
+VERSION="1.0.0"
+# Resolve symlinks (e.g. ~/.local/bin/nixos-doctor) so CHECKS_DIR
+# always points at the real install dir, not the link's directory.
+_SRC="${BASH_SOURCE[0]}"
+while [ -L "$_SRC" ]; do
+    _LINK=$(readlink "$_SRC") || exit 2
+    case "$_LINK" in
+        /*) _SRC="$_LINK" ;;
+        *) _SRC="$(dirname "$_SRC")/$_LINK" ;;
+    esac
+done
+SELF_DIR="$(cd "$(dirname "$_SRC")" >/dev/null 2>&1 && pwd)"
+CHECKS_DIR="$SELF_DIR/checks"
+if [ ! -d "$CHECKS_DIR" ]; then
+    echo "nixos-doctor: checks directory missing: $CHECKS_DIR" >&2
+    echo "reinstall or fix the symlink (see README.md layout)." >&2
+    exit 2
+fi
+if [ -n "${XDG_STATE_HOME:-}" ]; then
+    STATE_DIR="$XDG_STATE_HOME"
+elif [ -n "${HOME:-}" ]; then
+    STATE_DIR="$HOME/.local/state"
+else
+    STATE_DIR="${TMPDIR:-/tmp}/nixos-doctor-$(id -u)"
+fi
+STATE_LOG="$STATE_DIR/nixos-doctor.log"
+
+ALL_AREAS="boot secureboot systemd nix generations store services journal hardware network audio graphics gaming hyprland kde dms power time disk memory flake home secrets containers security updates bootperf rebuild backups"
+
+area_known() {
+    case " $ALL_AREAS " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
+# ---- option parsing (no getopt dep) ----
+# NOTE: everything from here through the final summary lives in main()
+# so tests can `source` this file for tier1_allowed/first_cmd without
+# executing a sweep.
+main() {
+if [ "${1:-}" = backup ]; then shift; exec "$SELF_DIR/backup.sh" "$@"; fi
+if [ "${1:-}" = "help" ]; then print_topic "${2:-}"; exit "$?"; fi
+AREAS="" JSON=0 JSON_V1=0 DEEP=0 USE_SUDO=0 FIX_SAFE=0 INTERACTIVE=0 BUNDLE=0
+for a in "$@"; do
+    case "$a" in
+        --json) JSON=1 ;;
+        --json-v1) JSON=1; JSON_V1=1 ;;
+        --deep) DEEP=1 ;;
+        --sudo) USE_SUDO=1 ;;
+        --fix-safe) FIX_SAFE=1 ;;
+        --interactive) INTERACTIVE=1 ;;
+        --bundle) BUNDLE=1 ;;
+        --watch) echo "nixos-doctor: --watch is not implemented" >&2; exit 2 ;;
+        --help|-h) sed -n '2,/^set -u/p' "$0" | sed 's/^# //; s/^#$//; 1{/^$/d}'; exit 0 ;;
+        --version) echo "nixos-doctor $VERSION"; exit 0 ;;
+        *) AREAS="$AREAS $a" ;;
+    esac
+done
+[ -z "$AREAS" ] && AREAS=" $ALL_AREAS "
+for a in $AREAS; do
+    if ! area_known "$a"; then
+        printf 'nixos-doctor: unknown area: %s\n' "$a" >&2
+        exit 2
+    fi
+done
+if [ "$INTERACTIVE" = 1 ]; then exec "$SELF_DIR/tui.sh" "$@"; fi
+if [ "$BUNDLE" = 1 ]; then exec "$SELF_DIR/bundle.sh" "$@"; fi
+sweep
+} # end main()
+
+# ---- output infra ----
+USE_COLOR=0
+[ -t 1 ] && [ -z "${NO_COLOR:-}" ] && USE_COLOR=1
+C_R=""; C_Y=""; C_G=""; C_B=""; C_0=""
+if [ "$USE_COLOR" = 1 ]; then C_R=$'\e[31m'; C_Y=$'\e[33m'; C_G=$'\e[32m'; C_B=$'\e[36m'; C_0=$'\e[0m'; fi
+
+PASS_N=0; WARN_N=0; FAIL_N=0; SKIP_N=0; ERROR_N=0; UNKNOWN_N=0
+JSON_ITEMS=""
+
+hash_value() {
+    local value="$1"
+    if have sha256sum; then
+        printf '%s' "$value" | sha256sum | cut -d' ' -f1
+    else
+        printf '%s' "$value" | cksum | awk '{print $1}'
+    fi
+}
+
+json_esc() { printf '%s' "$1" | LC_ALL=C tr -d '\000-\010\013\014\016-\037\177' | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' '; }
+
+EVIDENCE_JSON='{"available":false}'
+evidence_set() {
+    local command="$1" rc="$2" output="$3" source="$4" bounded
+    bounded=$(printf '%s' "$output" | head -c 4096)
+    EVIDENCE_JSON="{\"available\":true,\"command\":\"$(json_esc "$command")\",\"exit_code\":$rc,\"output\":\"$(json_esc "$bounded")\",\"source\":\"$(json_esc "$source")\"}"
+}
+evidence_clear() { EVIDENCE_JSON='{"available":false}'; }
+
+# finding <SEV> <AREA> <message> [fix...] — legacy display-only fix.
+finding() {
+    local sev="$1" area="$2" msg="$3"; shift 3
+    local fix="$*"
+    case "$sev" in
+        PASS) PASS_N=$((PASS_N+1)) ;;
+        WARN) WARN_N=$((WARN_N+1)) ;;
+        FAIL) FAIL_N=$((FAIL_N+1)) ;;
+        SKIP) SKIP_N=$((SKIP_N+1)) ;;
+        ERROR) ERROR_N=$((ERROR_N+1)) ;;
+        UNKNOWN) UNKNOWN_N=$((UNKNOWN_N+1)) ;;
+    esac
+    if [ "$JSON" = 1 ]; then
+        finding_json "$sev" "$area" "$msg" "$fix" "legacy" "${area}.legacy" unknown medium "" ""
+        return 0
+    fi
+    local col="$C_G" tag="PASS"
+    [ "$sev" = WARN ] && { col="$C_Y"; tag="WARN"; }
+    [ "$sev" = FAIL ] && { col="$C_R"; tag="FAIL"; }
+    [ "$sev" = SKIP ] && { col="$C_B"; tag="SKIP"; }
+    [ "$sev" = ERROR ] && { col="$C_R"; tag="ERROR"; }
+    [ "$sev" = UNKNOWN ] && { col="$C_B"; tag="UNKNOWN"; }
+    printf '%s%-4s%s [%s] %s' "$col" "$tag" "$C_0" "$area" "$msg"
+    [ -n "$fix" ] && printf '\n      %s->%s %s' "$C_B" "$C_0" "$fix"
+    printf '\n'
+}
+
+# finding_fix <SEV> <AREA> <message> <fix-id> <display> [args...]
+# Fix IDs are resolved by run_fix; arguments never become shell source.
+finding_fix() {
+    local sev="$1" area="$2" msg="$3" fix_id="$4" display="$5"; shift 5
+    case "$sev" in
+        PASS) PASS_N=$((PASS_N+1)) ;; WARN) WARN_N=$((WARN_N+1)) ;;
+        FAIL) FAIL_N=$((FAIL_N+1)) ;; SKIP) SKIP_N=$((SKIP_N+1)) ;;
+        ERROR) ERROR_N=$((ERROR_N+1)) ;;
+        UNKNOWN) UNKNOWN_N=$((UNKNOWN_N+1)) ;;
+    esac
+    if [ "$JSON" = 1 ]; then
+        finding_json "$sev" "$area" "$msg" "$display" "$fix_id" "${area}.${fix_id}" unknown high "" "" "$@"
+        return 0
+    fi
+    local col="$C_G" tag="PASS"
+    [ "$sev" = WARN ] && { col="$C_Y"; tag="WARN"; }
+    [ "$sev" = FAIL ] && { col="$C_R"; tag="FAIL"; }
+    [ "$sev" = SKIP ] && { col="$C_B"; tag="SKIP"; }
+    [ "$sev" = ERROR ] && { col="$C_R"; tag="ERROR"; }
+    [ "$sev" = UNKNOWN ] && { col="$C_B"; tag="UNKNOWN"; }
+    printf '%s%-4s%s [%s] %s' "$col" "$tag" "$C_0" "$area" "$msg"
+    [ -n "$display" ] && printf '\n      %s->%s %s' "$C_B" "$C_0" "$display"
+    printf '\n'
+}
+
+finding_json() {
+    local sev="$1" area="$2" msg="$3" display="$4" fix_id="$5"
+    local check="$6" scope="$7" confidence="$8" reason="$9" requires="${10}"
+    shift 10
+    local args='[' arg first=1
+    for arg in "$@"; do
+        [ "$first" = 1 ] || args+=','
+        args+="\"$(json_esc "$arg")\""
+        first=0
+    done
+    args+=']'
+    JSON_ITEMS="$JSON_ITEMS$( [ -n "$JSON_ITEMS" ] && printf ',' ){\"severity\":\"$sev\",\"area\":\"$(json_esc "$area")\",\"check\":\"$(json_esc "$check")\",\"scope\":\"$(json_esc "$scope")\",\"confidence\":\"$(json_esc "$confidence")\",\"reason\":\"$(json_esc "$reason")\",\"requires\":\"$(json_esc "$requires")\",\"message\":\"$(json_esc "$msg")\",\"fix\":\"$(json_esc "$display")\",\"fix_id\":\"$(json_esc "$fix_id")\",\"fix_args\":$args,\"evidence\":$EVIDENCE_JSON}"
+    evidence_clear
+}
+
+# finding_status <SEV> <AREA> <CHECK> <SCOPE> <CONFIDENCE> <REASON>
+#                <REQUIRES> <MESSAGE>
+finding_status() {
+    local sev="$1" area="$2" check="$3" scope="$4" confidence="$5"
+    local reason="$6" requires="$7" msg="$8"
+    case "$sev" in
+        PASS) PASS_N=$((PASS_N+1)) ;; WARN) WARN_N=$((WARN_N+1)) ;;
+        FAIL) FAIL_N=$((FAIL_N+1)) ;; SKIP) SKIP_N=$((SKIP_N+1)) ;;
+        ERROR) ERROR_N=$((ERROR_N+1)) ;;
+        UNKNOWN) UNKNOWN_N=$((UNKNOWN_N+1)) ;;
+        *) return 2 ;;
+    esac
+    if [ "$JSON" = 1 ]; then
+        finding_json "$sev" "$area" "$msg" "" "" "$check" "$scope" "$confidence" "$reason" "$requires"
+        return 0
+    fi
+    local col="$C_G"
+    [ "$sev" = WARN ] && col="$C_Y"
+    if [ "$sev" = FAIL ] || [ "$sev" = ERROR ]; then col="$C_R"; fi
+    [ "$sev" = SKIP ] && col="$C_B"
+    [ "$sev" = UNKNOWN ] && col="$C_B"
+    printf '%s%-5s%s [%s] %s\n' "$col" "$sev" "$C_0" "$area" "$msg"
+}
+
+# finding_observed is finding_status plus bounded command provenance.
+# finding_observed <SEV> <AREA> <CHECK> <SCOPE> <CONFIDENCE> <REASON>
+#                   <REQUIRES> <MESSAGE> <COMMAND> <EXIT> <OUTPUT> <SOURCE>
+finding_observed() {
+    local sev="$1" area="$2" check="$3" scope="$4" confidence="$5"
+    local reason="$6" requires="$7" msg="$8" command="$9" rc="${10}"
+    local output="${11}" source="${12}"
+    evidence_set "$command" "$rc" "$output" "$source"
+    finding_status "$sev" "$area" "$check" "$scope" "$confidence" "$reason" "$requires" "$msg"
+    evidence_clear
+}
+
+# have <cmd> — command existence probe
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# capability probes used by checks. These return success only when the
+# capability is actually usable, not merely when a binary exists.
+user_bus_available() {
+    have systemctl && systemctl --user show-environment >/dev/null 2>&1
+}
+
+uefi_booted() { [ -d "${NIXOS_DOCTOR_EFI_ROOT:-/sys/firmware/efi}" ]; }
+
+has_battery() {
+    have upower && upower -e 2>/dev/null | grep -qi '/battery_'
+}
+
+session_kind() {
+    if pgrep -x mango >/dev/null 2>&1; then
+        printf 'mango'
+    elif [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] || pgrep -x Hyprland >/dev/null 2>&1; then
+        printf 'hyprland'
+    elif pgrep -x plasmashell >/dev/null 2>&1; then
+        printf 'kde'
+    elif [ -n "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]; then
+        printf 'graphical'
+    else
+        printf 'none'
+    fi
+}
+
+gpu_vendor() {
+    if have lspci; then
+        lspci -nn 2>/dev/null | awk -F': ' '/VGA compatible controller|3D controller|Display controller/ {print tolower($2); exit}'
+    fi
+}
+
+# need_root <area> <what> — SKIP note unless --sudo with NOPASSWD sudo
+HAVE_ROOT=-1
+root_available() {
+    if [ "$HAVE_ROOT" = -1 ]; then
+        if [ "$USE_SUDO" = 1 ] && have sudo && sudo -n true 2>/dev/null; then HAVE_ROOT=1; else HAVE_ROOT=0; fi
+    fi
+    [ "$HAVE_ROOT" = 1 ]
+}
+
+need_root() {
+    if root_available; then return 0; fi
+    finding SKIP "$1" "$2 (needs root; re-run with --sudo)"
+    return 1
+}
+
+# print_topic <name> — `nixos-doctor help <area|flag>`.
+print_topic() {
+    case "${1:-}" in
+        ""|areas) printf 'areas: %s\n(use: nixos-doctor help <name>)\n' "$ALL_AREAS"; return 0 ;;
+        fix-safe|--fix-safe) printf '%s\n' "--fix-safe auto-applies Tier-1 fixes only: journal vacuum, daemon-reload, safe service restarts, reset-failed (transient units), plain nix-collect-garbage, baloo suspend." "Denied (reported only): rebuilds, rollbacks, repairs, -d garbage collection, reboots, bootloader/firmware/driver edits." "Every applied fix is audit-logged to ~/.local/state/nixos-doctor.log."; return 0 ;;
+        deep|--deep) printf '%s\n' "--deep adds slow checks: currently 'nix store verify --all' (can take minutes on a 78G store). SMART short checks run every sweep already."; return 0 ;;
+        sudo|--sudo) printf '%s\n' "--sudo enables [R] checks via 'sudo -n' (ESP listing, sbctl verify, SMART reads, ext4 reserves, firewall, secret perms). Never prompts: without NOPASSWD sudo those checks SKIP with a note."; return 0 ;;
+        json|--json) printf '%s\n' "--json prints one object: {tool, version, summary{pass,warn,fail,skip}, findings[{severity,area,message,fix}]}. Exit codes still apply."; return 0 ;;
+        interactive|--interactive) printf '%s\n' "--interactive opens a numbered menu: pick an area, tick WARN/FAIL findings, confirm Tier-1 fixes. Tier-2 actions are displayed for manual execution. 'b' writes a bundle, 'q' quits."; return 0 ;;
+        bundle|--bundle) printf '%s\n' "--bundle writes /tmp/nixos-doctor-<host>-<date>.tar.gz: full journal, dmesg, generations, service states, hardware, network (no keys), nix status, desktop state, and the JSON report." "Never uploads. Secrets (keys, env files, history) are never collected — review before sharing."; return 0 ;;
+        policy|tiers) printf '%s\n' "Tier 0 (default): report only, zero mutations. Tier 1 (--fix-safe / confirmed): GC without -d, journal vacuum, daemon-reload, safe restarts, reset-failed, baloo suspend. Tier 2 (manual only): rebuild, rollback, repair, GC -d, reboot, bootloader, firmware, drivers."; return 0 ;;
+        boot) printf 'boot: systemd-boot entries, ESP free space, booted-vs-current kernel, last-boot errors, sbctl signatures [R].\n' ;;
+        secureboot) printf 'secureboot: UEFI mode, firmware Secure Boot state, bootloader/Lanzaboote, ESP, EFI variables, boot entry, generation alignment, and signature verification [R].\n' ;;
+        systemd) printf 'systemd: system/user managers, failed units, unit state, jobs, timers, restart loops, OOM services, and deep boot analysis.\n' ;;
+        nix) printf 'nix: flake revision/dirty state, lock metadata, deep flake check, generations, kernel/initrd alignment, daemon, and database lock.\n' ;;
+        generations) printf 'generations: system/home profile counts, booted-vs-current mismatch (pending reboot or rollback state).\n' ;;
+        store) printf 'store: current closure size, disk pressure, binary-cache reachability, stale result* GC roots, integrity verify (--deep).\n' ;;
+        services) printf 'services: failed units (transient @instances collapsed to one line), system state, mango/DMS stack, failed timers.\n' ;;
+        journal) printf 'journal: this-boot errors attributed to units via JSON, journal disk use, coredumps, OOM/taint/firmware lines.\n' ;;
+        hardware) printf 'hardware: nvidia module/driver/VRAM, CPU governor, temps, SMART short + SSD wear [R], battery, fwupd presence.\n' ;;
+        network) printf 'network: links, default route, DNS, NetworkManager state, Wi-Fi drop counts, NM-vs-networkd conflict, firewall [R].\n' ;;
+        audio) printf 'audio: pipewire/wireplumber/pulse user units, bluetooth power, disconnect storms.\n' ;;
+        graphics) printf 'graphics: mango running + config valid + >=0.14 IPC gate, GL renderer (llvmpipe is a FAIL), xwayland clients, portals, polkit agent, XDG vars, DMS settings.json.\n' ;;
+        gaming) printf 'gaming: Steam library + shader-cache size, custom Proton tools, gamemode/mangohud presence.\n' ;;
+        hyprland) printf 'hyprland: SKIPS cleanly outside Hyprland sessions; when live: hyprctl IPC, config files, quickshell shell, log tail.\n' ;;
+        kde) printf 'kde: SKIPS outside Plasma; greetd-vs-sddm seat check, baloo churn, akonadi, top crashers via coredump EXE names.\n' ;;
+        dms) printf 'dms: structured DMS installation, compositor, service, environment, config, optional-feature, and font diagnostics via dms doctor --json.\n' ;;
+        power) printf 'power: power profile, suspend mode, swap/zram for hibernate, resume errors, nvidia-suspend hook.\n' ;;
+        time) printf 'time: NTP sync (TLS breaks without it), locale availability.\n' ;;
+        disk) printf 'disk: per-mount usage, inodes, ext4/IO errors + forced read-only remounts, ext4 reserves [R], TRIM, /tmp sizes.\n' ;;
+        memory) printf 'memory: PSI stall pressure, swap/zram presence, RAM headroom.\n' ;;
+        flake) printf 'flake: /etc/nixos dirt, lock age, legacy channels, autoUpgrade state, nh presence + clean config.\n' ;;
+        home) printf 'home: home-manager profile generations, user profile link sanity.\n' ;;
+        secrets) printf 'secrets: existence + 0600/0400 perms of referenced secret files [R]. Contents are NEVER read.\n' ;;
+        containers) printf 'containers: podman/docker/libvirt states, podman reclaimable, unused flatpak runtimes.\n' ;;
+        security) printf 'security: SSH brute-force spikes, ~/.ssh perms, world-writable dotfiles, AppArmor state.\n' ;;
+        updates) printf 'updates: lock age vs CVEs, staged-but-unbooted kernel, fwupd pointer.\n' ;;
+        bootperf) printf 'bootperf: total boot time, units slower than 5s (device waits excluded).\n' ;;
+        rebuild) printf 'rebuild: /tmp headroom, RAM vs max-jobs, nix DB lock, reminder to paste traces in TUI.\n' ;;
+        backups) printf 'backups: restic/borg jobs configured? (none here — ext4 has no snapshots, boot menu is the only rollback).\n' ;;
+        backup) printf 'backup: explicit Git backup of allowlisted NixOS and dotfiles; use nixos-doctor backup --help.\n' ;;
+        *) printf 'unknown topic: %s\ntry: nixos-doctor help areas\n' "${1:-}" >&2; return 2 ;;
+    esac
+}
+
+audit() { # audit <command...> — log applied Tier-1 fixes
+    if ! mkdir -p "$STATE_DIR" || ! chmod 700 "$STATE_DIR"; then
+        printf 'nixos-doctor: cannot create audit directory: %s\n' "$STATE_DIR" >&2
+        return 1
+    fi
+    printf '%s CMD %s\n' "$(date -u +%FT%TZ)" "$*" >>"$STATE_LOG" || {
+        printf 'nixos-doctor: cannot write audit log: %s\n' "$STATE_LOG" >&2
+        return 1
+    }
+}
+
+# first_cmd <fix-string> — extract the runnable command.
+# Convention for check authors: fix strings start with the command,
+# alternates follow after " · ", and "(Tier 1)"/"(asks first)" suffixes
+# are human notes, never executed.
+first_cmd() {
+    printf '%s' "$1" | sed -e 's/ ·.*//' -e 's/ (Tier 1)$//' -e 's/ (asks first)$//'
+}
+
+# Convert an allowlisted Tier-1 string into an argv array. Nothing produced by a
+# check is passed back through a shell interpreter in automatic mode.
+prepare_tier1() {
+    local cmd="$1" scope="" action="" unit=""
+    SAFE_CMD=()
+    case "$cmd" in
+        nix-collect-garbage) SAFE_CMD=(nix-collect-garbage); return 0 ;;
+        "balooctl suspend") SAFE_CMD=(balooctl suspend); return 0 ;;
+        "balooctl6 suspend") SAFE_CMD=(balooctl6 suspend); return 0 ;;
+    esac
+    if [[ "$cmd" =~ ^journalctl[[:space:]]+(--vacuum-(size|time)=([0-9]+([.][0-9]+)?)([KMGT]?|s|min|h|d|weeks?))$ ]]; then
+        SAFE_CMD=(journalctl "${BASH_REMATCH[1]}")
+        return 0
+    fi
+    if [[ "$cmd" =~ ^systemctl( --user)?[[:space:]]+(daemon-reload)$ ]]; then
+        [ -n "${BASH_REMATCH[1]}" ] && scope="--user"
+        SAFE_CMD=(systemctl)
+        [ -n "$scope" ] && SAFE_CMD+=("$scope")
+        SAFE_CMD+=(daemon-reload)
+        return 0
+    fi
+    if [[ "$cmd" =~ ^systemctl( --user)?[[:space:]]+(restart|reset-failed)[[:space:]]+(.+)$ ]]; then
+        [ -n "${BASH_REMATCH[1]}" ] && scope="--user"
+        action="${BASH_REMATCH[2]}"
+        unit="${BASH_REMATCH[3]}"
+        [[ "$unit" == \'*\' ]] && unit="${unit:1:${#unit}-2}"
+        [[ "$unit" =~ ^[A-Za-z0-9_@:.~-]+\.(service|socket|target|timer|scope|mount|slice|path)$ ]] || return 1
+        if [ "$action" = restart ]; then
+            case "$unit" in
+                *display-manager*|*sddm*|*greetd*|*gdm*|*mango*|*dms*|*plasma*|*kwin*|*pipewire*|*NetworkManager*|*sshd*) return 1 ;;
+            esac
+        fi
+        SAFE_CMD=(systemctl)
+        [ -n "$scope" ] && SAFE_CMD+=("$scope")
+        SAFE_CMD+=("$action" "$unit")
+        return 0
+    fi
+    return 1
+}
+
+tier1_allowed() { prepare_tier1 "$1"; }
+run_tier1() { prepare_tier1 "$1" && "${SAFE_CMD[@]}"; }
+
+run_fix() {
+    local id="$1"; shift
+    case "$id" in
+        journal_vacuum_size)
+            [[ "$1" =~ ^[0-9]+([.][0-9]+)?[KMGT]?$ ]] || return 1
+            journalctl "--vacuum-size=$1" ;;
+        service_restart|service_reset_failed)
+            local scope="$1" unit="$2" action=restart
+            [ "$id" = service_reset_failed ] && action=reset-failed
+            [[ "$unit" =~ ^[A-Za-z0-9_@:.~-]+\.(service|socket|target|timer|scope|mount|slice|path)$ ]] || return 1
+            [ "$scope" = user ] && systemctl --user "$action" "$unit" || systemctl "$action" "$unit" ;;
+        nix_collect_garbage) nix-collect-garbage ;;
+        baloo_suspend) "$1" suspend ;;
+        fstrim) fstrim -a ;;
+        *) return 1 ;;
+    esac
+}
+
+# ---- run (sweep; never when sourced by tests) ----
+sweep() {
+[ "$JSON" = 0 ] && printf '%s== nixos-doctor %s ==%s\n' "$C_B" "$VERSION" "$C_0"
+# Root runs measure root's world (no user bus, no ~/.config, no session):
+# every user-session check misreports. Steer to the right invocation.
+if [ "$(id -u)" = 0 ]; then
+    printf '%s!! running as root: audio/portals/mango/DMS/steam/user-unit checks read ROOT%s\n' "$C_Y" "$C_0" >&2
+    printf '%s!! environment and will misreport. Run as your user instead: nixos-doctor --sudo%s\n' "$C_Y" "$C_0" >&2
+fi
+for area in $AREAS; do
+    f="$CHECKS_DIR/$area.sh"
+    # shellcheck disable=SC1090
+    . "$f"
+    if "check_$area"; then
+        :
+    else
+        rc=$?
+        finding_status ERROR "$area" "${area}.execution" system high "check exited $rc" "" "check crashed (exit $rc); please report"
+    fi
+done
+
+if [ "$JSON" = 1 ]; then
+    if [ "$JSON_V1" = 1 ]; then
+        printf '{"tool":"nixos-doctor","version":"%s","schema_version":1,"summary":{"pass":%d,"warn":%d,"fail":%d,"skip":%d,"error":%d,"unknown":%d},"findings":[%s]}\n' \
+            "$VERSION" "$PASS_N" "$WARN_N" "$FAIL_N" "$SKIP_N" "$ERROR_N" "$UNKNOWN_N" "$JSON_ITEMS"
+    else
+        generated_at=$(date -u +%FT%TZ)
+        boot_id_hash=""
+        [ -r /proc/sys/kernel/random/boot_id ] && boot_id_hash=$(hash_value "$(cat /proc/sys/kernel/random/boot_id)")
+        host_id_hash=$(hash_value "${HOSTNAME:-$(hostname 2>/dev/null || printf unknown)}")
+        generation_hash=$(hash_value "$(readlink -f /run/booted-system 2>/dev/null || printf unknown)|$(readlink -f /nix/var/nix/profiles/system 2>/dev/null || printf unknown)")
+        report_id=$(hash_value "$generated_at:$$:$host_id_hash")
+        printf '{"tool":"nixos-doctor","version":"%s","schema_version":2,"report_id":"%s","generated_at":"%s","identity":{"host_hash":"%s","boot_hash":"%s","generation_hash":"%s"},"summary":{"pass":%d,"warn":%d,"fail":%d,"skip":%d,"error":%d,"unknown":%d},"findings":[%s]}\n' \
+            "$VERSION" "$report_id" "$generated_at" "$host_id_hash" "$boot_id_hash" "$generation_hash" "$PASS_N" "$WARN_N" "$FAIL_N" "$SKIP_N" "$ERROR_N" "$UNKNOWN_N" "$JSON_ITEMS"
+    fi
+else
+    printf '%s== %d pass · %d warn · %d fail · %d skip · %d error · %d unknown ==%s\n' "$C_B" "$PASS_N" "$WARN_N" "$FAIL_N" "$SKIP_N" "$ERROR_N" "$UNKNOWN_N" "$C_0"
+fi
+
+# ---- fix-safe: re-run areas as JSON, auto-apply Tier-1 allowlist ----
+EXIT_RC=0
+[ "$FAIL_N" -gt 0 ] && EXIT_RC=2
+[ "$ERROR_N" -gt 0 ] && EXIT_RC=2
+[ "$WARN_N" -gt 0 ] && [ "$EXIT_RC" = 0 ] && EXIT_RC=1
+if [ "$FIX_SAFE" = 1 ] && [ "$JSON" = 0 ]; then
+    if ! have python3; then
+        printf 'nixos-doctor: --fix-safe requires python3\n' >&2
+        exit 2
+    fi
+    tmp=$(mktemp) || { printf 'nixos-doctor: cannot create temporary report\n' >&2; exit 2; }
+    trap 'rm -f "$tmp"' EXIT HUP INT TERM
+    # Re-pass preserves privilege/depth flags so findings match pass 1.
+    read -r -a area_args <<<"$AREAS"
+    report_args=("${area_args[@]}" --json)
+    [ "$DEEP" = 1 ] && report_args+=(--deep)
+    [ "$USE_SUDO" = 1 ] && report_args+=(--sudo)
+    "$0" "${report_args[@]}" >"$tmp" 2>/dev/null
+    report_rc=$?
+    if [ "$report_rc" -gt 2 ]; then
+        printf 'nixos-doctor: fix discovery failed (exit %d)\n' "$report_rc" >&2
+        exit 2
+    fi
+    n=0
+    while IFS=$'\t' read -r fix_id display_b64 args_b64; do
+        [ -n "$fix_id" ] || continue
+        display=$(printf '%s' "$display_b64" | base64 -d)
+        if [ "$fix_id" = legacy ]; then
+            printf 'Tier-1 SKIP (legacy fix requires manual confirmation): %s\n' "$display"
+            continue
+        fi
+        mapfile -t fix_args < <(printf '%s' "$args_b64" | base64 -d | python3 -c 'import json,sys; print(*json.load(sys.stdin),sep="\n")')
+        if [ "$fix_id" = service_restart ] || [ "$fix_id" = service_reset_failed ] || [ "$fix_id" = journal_vacuum_size ] || [ "$fix_id" = nix_collect_garbage ] || [ "$fix_id" = baloo_suspend ] || [ "$fix_id" = fstrim ]; then
+            printf 'Tier-1 RUN: %s\n' "$display"
+            run_fix "$fix_id" "${fix_args[@]}" >/dev/null 2>&1
+            rc=$?
+            audit "$fix_id $display (rc=$rc)" || true
+            n=$((n+1))
+        else
+            printf 'Tier-1 SKIP (unknown fix ID): %s\n' "$display"
+        fi
+    done < <(python3 -c "
+import json,sys
+d = json.load(open(sys.argv[1]))
+for f in d['findings']:
+    if f['severity'] in ('WARN','FAIL') and f.get('fix_id'):
+        import base64
+        print(f['fix_id']+'\\t'+base64.b64encode(f['fix'].encode()).decode()+'\\t'+base64.b64encode(json.dumps(f.get('fix_args',[])).encode()).decode())" "$tmp")
+    rm -f "$tmp"
+    trap - EXIT HUP INT TERM
+    printf 'applied %d Tier-1 fix(es); re-run nixos-doctor to confirm.\n' "$n"
+fi
+exit $EXIT_RC
+} # end sweep()
+
+[[ "${BASH_SOURCE[0]}" == "${0}" ]] && main "$@"

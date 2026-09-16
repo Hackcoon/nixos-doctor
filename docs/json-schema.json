@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/nixos-doctor/json-schema-v2",
+  "title": "nixos-doctor current report schema",
+  "description": "Alias for the current schema. See json-schema-v2.json and json-schema-v1.json.",
+  "$ref": "json-schema-v2.json"
+}
