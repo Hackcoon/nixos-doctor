@@ -1,11 +1,21 @@
 # Changelog
 
+## 1.1.0 - 2026-09-14
+
+- Made the hardware and desktop direction explicitly universal across GPU
+  vendors, sessions, filesystems, bootloaders, and optional shells.
+- Added optional Noctalia checks using `noctalia --version` and
+  `noctalia config validate`.
+- Made bundle desktop and flake collection configurable and tool-aware.
+
 ## 1.0.0 - 2026-09-14
 
 - Added the dedicated `nix` area for flake revision and dirty state, lock
   metadata, optional deep read-only flake validation, generation/kernel/initrd
   alignment, Nix daemon health, and database-lock visibility.
 - Added fixture coverage for revision metadata and read-only flake failures.
+- Added optional Noctalia integration through `noctalia --version` and
+  `noctalia config validate`, with user-service applicability handling.
 
 ## 0.9.0 - 2026-09-14
 

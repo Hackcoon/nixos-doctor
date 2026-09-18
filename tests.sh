@@ -6,7 +6,7 @@ D="$(cd "$(dirname "$0")" >/dev/null 2>&1 && pwd)"
 pass=0; fail=0
 ok() { pass=$((pass+1)); echo "ok: $1"; }
 bad() { fail=$((fail+1)); echo "FAIL: $1"; }
-cleanup() { rm -rf "$D/.test-bin" "$D/.test-link" "$D/.test-hw" "$D/.test-bin-cap" "$D/.test-bin-failure" "$D/.test-secureboot" "$D/.test-systemd" "$D/.test-nix"; }
+cleanup() { rm -rf "$D/.test-bin" "$D/.test-link" "$D/.test-hw" "$D/.test-bin-cap" "$D/.test-bin-failure" "$D/.test-secureboot" "$D/.test-systemd" "$D/.test-nix" "$D/.test-noctalia"; }
 trap cleanup EXIT HUP INT TERM
 
 # Backup dry-run is isolated from the real machine and uses only an allowlist.
@@ -271,6 +271,46 @@ assert any(f['severity']=='ERROR' and f['check']=='nix.flake_check' for f in row
 print('nix-correlation-ok')")
 [ "$out" = "nix-correlation-ok" ] && ok "nix-correlation" || bad "nix-correlation (got: $out)"
 rm -rf "$D/.test-nix"
+
+# Optional Noctalia integration consumes its stable CLI validation interface.
+mkdir -p "$D/.test-noctalia/bin"
+cat >"$D/.test-noctalia/bin/noctalia" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  "--version") echo 'noctalia v5.1.0' ;;
+  "config validate") echo 'configuration valid' ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$D/.test-noctalia/bin/noctalia"
+out=$(PATH="$D/.test-noctalia/bin:$PATH" "$D/nixos-doctor" noctalia --json 2>/dev/null | python3 -c "
+import json,sys
+rows=json.load(sys.stdin)['findings']
+assert any(f['severity']=='PASS' and 'v5.1.0' in f['message'] for f in rows), rows
+assert any(f['severity']=='PASS' and 'configuration valid' in f['message'] for f in rows), rows
+print('noctalia-ok')")
+[ "$out" = "noctalia-ok" ] && ok "noctalia-integration" || bad "noctalia-integration (got: $out)"
+rm -rf "$D/.test-noctalia"
+
+# Vendor detection must not produce an NVIDIA warning on AMD hardware.
+mkdir -p "$D/.test-bin-gpu"
+cat >"$D/.test-bin-gpu/lspci" <<'EOF'
+#!/usr/bin/env bash
+echo '03:00.0 VGA compatible controller: Advanced Micro Devices, Inc. [AMD/ATI] Radeon RX 6800'
+EOF
+cat >"$D/.test-bin-gpu/lsmod" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$D/.test-bin-gpu/"*
+out=$(PATH="$D/.test-bin-gpu:$PATH" SMART_DEVS='' "$D/nixos-doctor" hardware --json 2>/dev/null | python3 -c "
+import json,sys
+rows=json.load(sys.stdin)['findings']
+assert any(f['severity']=='PASS' and 'AMD GPU detected' in f['message'] for f in rows), rows
+assert not any('nvidia' in f['message'].lower() and f['severity'] in ('WARN','FAIL') for f in rows), rows
+print('amd-applicability-ok')")
+[ "$out" = "amd-applicability-ok" ] && ok "amd-applicability" || bad "amd-applicability (got: $out)"
+rm -rf "$D/.test-bin-gpu"
 
 # Journal and time command failures are errors, not healthy/unsynced guesses.
 mkdir -p "$D/.test-bin-failure"

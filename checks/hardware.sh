@@ -1,6 +1,7 @@
 # hardware checks [U/R]
 check_hardware() {
-    if lsmod 2>/dev/null | grep -q "^nvidia "; then
+    vendor=$(gpu_vendor)
+    if printf '%s' "$vendor" | grep -q nvidia && lsmod 2>/dev/null | grep -q "^nvidia "; then
         finding PASS hardware "nvidia kernel module loaded"
         if have nvidia-smi; then
             vram=$(nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader,nounits 2>/dev/null | head -1)
@@ -13,10 +14,10 @@ check_hardware() {
             [ -n "$drv" ] && finding PASS hardware "nvidia driver $drv"
         fi
     else
-        vendor=$(gpu_vendor)
         case "$vendor" in
             *nvidia*) finding_status FAIL hardware hardware.nvidia_module hardware high "NVIDIA GPU detected but kernel module absent" "lspci,lsmod" "nvidia GPU detected but module is not loaded" ;;
-            *amd*|*advanced\ micro\ devices*|*radeon*|*intel*) finding_status SKIP hardware hardware.nvidia hardware high "different GPU vendor" "lspci" "NVIDIA checks not applicable ($vendor)" ;;
+            *amd*|*advanced\ micro\ devices*|*radeon*) finding_status PASS hardware hardware.amd hardware high "AMD GPU detected; NVIDIA checks not applicable" lspci "AMD GPU detected" ;;
+            *intel*) finding_status PASS hardware hardware.intel hardware high "Intel GPU detected; NVIDIA checks not applicable" lspci "Intel GPU detected" ;;
             *) finding_status UNKNOWN hardware hardware.gpu_vendor hardware low "GPU not detected or lspci unavailable" lspci "GPU vendor could not be identified" ;;
         esac
     fi
@@ -33,9 +34,19 @@ check_hardware() {
     if have smartctl; then
         if need_root hardware "SMART health"; then
             bad=0; checked=0
-            # SMART_DEVS override exists for tests.sh fixtures (CI has no disks).
-            for d in ${SMART_DEVS:-/dev/sd? /dev/nvme?n1}; do
-                if [ -z "${SMART_DEVS:-}" ]; then [ -b "$d" ] || continue; fi
+            devices=()
+            if [ -n "${SMART_DEVS:-}" ]; then
+                read -r -a devices <<<"$SMART_DEVS"
+            elif have lsblk; then
+                mapfile -t devices < <(lsblk -dnpo NAME,TYPE 2>/dev/null | awk '$2=="disk" {print $1}')
+            else
+                finding_status SKIP hardware hardware.smart hardware high "lsblk unavailable for device enumeration" "smartctl,lsblk" "SMART devices could not be enumerated"
+            fi
+            if [ "${#devices[@]}" -eq 0 ] && [ -n "${SMART_DEVS:-}" ]; then
+                finding_status UNKNOWN hardware hardware.smart hardware medium "no SMART fixture devices supplied" SMART_DEVS "SMART device list is empty"
+            fi
+            for d in "${devices[@]}"; do
+                [ -b "$d" ] || [ -n "${SMART_DEVS:-}" ] || continue
                 health=$(sudo -n smartctl -H "$d" 2>&1)
                 health_rc=$?
                 if [ "$health_rc" -ne 0 ] && printf '%s\n' "$health" | grep -qiE 'unsupported|unavailable|not available|unknown usb bridge'; then

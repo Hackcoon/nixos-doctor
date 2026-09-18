@@ -17,7 +17,7 @@ check_hyprland() {
     for f in ~/.config/hypr/hyprland.lua ~/.config/hypr/binds.lua; do
         [ -f "$f" ] && finding PASS hyprland "$(basename "$f") present" || finding WARN hyprland "$f missing" "restore from backup/dotfiles"
     done
-    # quickshell-based shell in Hyprland sessions (example: fury-bar).
+    # Optional quickshell-based shell in Hyprland sessions.
     # Accept any running quickshell shell; only warn when none is present.
     if shell=$(quickshell list --all 2>/dev/null | grep -o "quickshell/[^[:space:]]*" | head -1); then
         finding PASS hyprland "quickshell shell running ($shell)"

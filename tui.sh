@@ -7,7 +7,7 @@ DOCTOR="$SELF_DIR/nixos-doctor"
 # Reuse first_cmd() extraction (fix strings carry human suffixes).
 # shellcheck disable=SC1090
 . "$SELF_DIR/nixos-doctor"
-AREAS="boot secureboot systemd nix generations store services journal hardware network audio graphics gaming hyprland kde dms power time disk memory flake home secrets containers security updates bootperf rebuild backups"
+AREAS="boot secureboot systemd nix noctalia generations store services journal hardware network audio graphics gaming hyprland kde dms power time disk memory flake home secrets containers security updates bootperf rebuild backups"
 
 run_area_json() { "$DOCTOR" "$1" --json 2>/dev/null; }
 

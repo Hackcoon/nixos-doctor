@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# nixos-doctor 1.0.0 — report-first NixOS health checker.
+# nixos-doctor 1.1.0 — report-first NixOS health checker.
 #
 # Usage:
 #   nixos-doctor [area...] [flags]
@@ -9,7 +9,7 @@
 #   boot generations store services journal hardware network audio
 #   graphics gaming hyprland kde dms power time disk memory flake home
 #   secrets containers security updates bootperf rebuild backups
-#   secureboot systemd nix
+#   secureboot systemd nix noctalia
 #
 # Flags:
 #   --fix-safe     auto-apply Tier-1 fixes only (GC without -d, journal
@@ -45,7 +45,7 @@
 # Docs: ~/nixos-doctor/README.md, PLAN.md, AI-RUNBOOK.md.
 set -u
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 # Resolve symlinks (e.g. ~/.local/bin/nixos-doctor) so CHECKS_DIR
 # always points at the real install dir, not the link's directory.
 _SRC="${BASH_SOURCE[0]}"
@@ -72,7 +72,7 @@ else
 fi
 STATE_LOG="$STATE_DIR/nixos-doctor.log"
 
-ALL_AREAS="boot secureboot systemd nix generations store services journal hardware network audio graphics gaming hyprland kde dms power time disk memory flake home secrets containers security updates bootperf rebuild backups"
+ALL_AREAS="boot secureboot systemd nix noctalia generations store services journal hardware network audio graphics gaming hyprland kde dms power time disk memory flake home secrets containers security updates bootperf rebuild backups"
 
 area_known() {
     case " $ALL_AREAS " in *" $1 "*) return 0 ;; *) return 1 ;; esac
@@ -309,6 +309,7 @@ print_topic() {
         secureboot) printf 'secureboot: UEFI mode, firmware Secure Boot state, bootloader/Lanzaboote, ESP, EFI variables, boot entry, generation alignment, and signature verification [R].\n' ;;
         systemd) printf 'systemd: system/user managers, failed units, unit state, jobs, timers, restart loops, OOM services, and deep boot analysis.\n' ;;
         nix) printf 'nix: flake revision/dirty state, lock metadata, deep flake check, generations, kernel/initrd alignment, daemon, and database lock.\n' ;;
+        noctalia) printf 'noctalia: optional Noctalia CLI, user service, version, configuration validation, and expected-shell state.\n' ;;
         generations) printf 'generations: system/home profile counts, booted-vs-current mismatch (pending reboot or rollback state).\n' ;;
         store) printf 'store: current closure size, disk pressure, binary-cache reachability, stale result* GC roots, integrity verify (--deep).\n' ;;
         services) printf 'services: failed units (transient @instances collapsed to one line), system state, mango/DMS stack, failed timers.\n' ;;

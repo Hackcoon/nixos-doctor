@@ -3,6 +3,13 @@
 Newest entries first. Every change gets a dated entry: what, why,
 validation (`./tests.sh` + live sweep result).
 
+## 2026-09-14 — v1.1.0 universal hardware direction + Noctalia
+- Made the public project explicitly universal across GPU vendors, sessions,
+  filesystems, bootloaders, usernames, and optional desktop shells.
+- Added optional Noctalia version/config/service diagnostics and AMD
+  applicability regression coverage.
+- Made bundle collection use the configured flake root and available tools.
+
 ## 2026-09-14 — v1.0.0 Step 6 Nix correlation
 - Added `nix` diagnostics for flake revision/dirty state, lock metadata,
   read-only deep validation, generation/kernel/initrd alignment, daemon state,

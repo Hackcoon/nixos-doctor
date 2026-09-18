@@ -4,7 +4,10 @@ This guide covers source checkout installation, Nix flake installation,
 declarative NixOS/Home Manager installation patterns, upgrades, verification,
 uninstallation, and troubleshooting.
 
-`nixos-doctor` is designed for NixOS/Linux systems with Bash 5.x. It should be
+`nixos-doctor` is a universal NixOS/Linux diagnostic tool. It does not assume a
+specific GPU, desktop shell, filesystem, bootloader, or username; checks detect
+hardware and session applicability before reporting. It is designed for systems
+with Bash 5.x. It should be
 run as the normal user. Use `--sudo` for checks that need noninteractive root
 access. Do not run the main doctor command as `sudo nixos-doctor` because user
 session checks would inspect root's environment instead of yours.
@@ -24,6 +27,7 @@ Optional commands enable additional checks:
 - `bootctl`, `sbctl`, `efibootmgr`, and `mokutil` for Secure Boot diagnostics.
 - `smartctl`, `sensors`, `upower`, `nvidia-smi`, and `lspci` for hardware checks.
 - `dms` for DMS integration through `dms doctor --json`.
+- `noctalia` for Noctalia integration through `noctalia config validate`.
 - `git` for configuration backups.
 - `curl`, `nmcli`, `ip`, `getent`, `flatpak`, `podman`, and other optional
   tools for their respective areas.

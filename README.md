@@ -18,7 +18,10 @@ mkdir -p ~/.local/bin
 ln -sfn "$PWD/nixos-doctor" ~/.local/bin/nixos-doctor
 ```
 
-The tool targets Bash 5.x on NixOS/Linux. Python 3 is required by
+The tool is designed as a universal NixOS/Linux diagnostic tool, not for one
+specific GPU, desktop, filesystem, bootloader, or username. Hardware,
+compositor, battery, bootloader, and optional-service checks detect what is
+present and skip what is not applicable. Bash 5.x is required. Python 3 is required by
 `--interactive` and `--fix-safe`; other commands such as `systemctl`, `nix`,
 `journalctl`, `smartctl`, and desktop tools are optional and are skipped when
 not available. Checks for a desktop, GPU, bootloader, or battery are only
@@ -96,9 +99,9 @@ scope. Findings whose command evidence is unavailable explicitly use
 `{"available":false}`. Evidence is diagnostic context and may still contain
 sensitive data; inspect reports before sharing them.
 
-## The 31 areas
+## The 32 areas
 
-boot · secureboot · systemd · nix · generations · store · services · journal · hardware ·
+boot · secureboot · systemd · nix · noctalia · generations · store · services · journal · hardware ·
 network · audio · graphics (mango/DMS: version gate, config, IPC,
 settings JSON) · gaming (steam/shaders, gamemode, mangohud) ·
 hyprland (session-aware SKIP, hyprctl IPC, quickshell shell, log
@@ -122,6 +125,10 @@ The dedicated `systemd` area reports system and user manager state separately,
 failed service properties, restart counts, queued jobs, timer schedule data,
 missed-run signals, OOM service state, and optional deep boot analysis. Use
 `nixos-doctor systemd --deep` when boot timing and dependency analysis is needed.
+
+The optional `noctalia` area uses Noctalia's CLI to validate its configuration,
+report its version, and inspect its user service. It skips cleanly when
+Noctalia is not installed and does not require Noctalia for any other area.
 
 ## Fix policy
 
@@ -186,11 +193,13 @@ non-executable host preferences without sourcing configuration files:
 NIXOS_DOCTOR_EXPECTED_COMPOSITOR=mango nixos-doctor graphics
 NIXOS_DOCTOR_EXPECTED_COMPOSITOR=none nixos-doctor graphics hyprland
 NIXOS_DOCTOR_FLAKE_ROOT="$HOME/src/my-nixos" nixos-doctor flake
+NIXOS_DOCTOR_EXPECTED_SHELL=noctalia nixos-doctor noctalia
 ```
 
 Supported compositor values are `auto`, `mango`, `hyprland`, `kde`, and
-`none`. The profile changes applicability only; it never runs commands from
-the environment.
+`none`. `NIXOS_DOCTOR_EXPECTED_SHELL=noctalia` warns when Noctalia is installed
+but its user service is not active. Profiles change applicability only; they
+never run commands from the environment.
 
 ## Maintenance
 

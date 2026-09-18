@@ -60,7 +60,7 @@ pairs with it. Secrets rule stands: the tool does not intentionally collect
 `/var/lib/*/env`, sops/agenix material, shell history, browser
 profiles, SSH keys; prints the reminder; never uploads.
 
-## 3. Check catalog (27 areas, including DMS and dedicated Secure Boot integration)
+## 3. Check catalog (32 areas, including DMS, Noctalia, Nix, systemd, and Secure Boot integrations)
 
 Format: check — command [U/R] — trigger. Manual ref where one exists.
 
@@ -158,7 +158,7 @@ Format: check — command [U/R] — trigger. Manual ref where one exists.
 - `zpool status -x` when ZFS present [U]; btrfs `/.snapshots`
   presence flips the rollback story [U].
 - Reserved-block share, ext4 only, root device auto-detected
-  (`tune2fs`, was hardcoded `/dev/sdb2`; default 5% ≈ 21G here) [R]
+  (`tune2fs`, root device auto-detected; never hardcode a block device) [R]
   — WARN with `tune2fs -m 1` cmd (Tier 2, data-safe).
 - TRIM: `fstrim.timer` enabled (SSD) [U] — WARN if off.
 - /tmp + /var/tmp size, stale crash dumps [U].
@@ -236,7 +236,7 @@ sweep and does not replace encrypted secret storage.
   check); full checks only inside Hyprland sessions.
 - hyprctl IPC responsive (monitors JSON parses) [U].
 - Config files present (hyprland.lua, binds.lua) [U].
-- fury-bar alive (example quickshell shell under Hyprland) [U].
+- configured quickshell shell alive under Hyprland [U].
 - Log tail error scan (`~/.cache/hyprland/hyprland.log`) [U].
 - Graphics area also gates: mango >= 0.14 (DMS bar IPC floor) and
   DMS settings.json parses.

@@ -22,9 +22,9 @@ environments, machine-readable, and conservative with secrets and uploads.
 
 ## Current Baseline
 
-Version `1.0.0` currently includes:
+Version `1.1.0` currently includes:
 
-- 31 areas, including the official DMS, Secure Boot, systemd, and Nix integrations.
+- 32 areas, including DMS, Noctalia, Secure Boot, systemd, and Nix integrations.
 - Nix flake packaging, CI, Bash syntax checks, ShellCheck, and regression tests.
 - Versioned JSON output (`schema_version: 2`) with `--json-v1` compatibility.
 - Structured fix IDs for migrated Tier 1 actions.
@@ -162,7 +162,7 @@ metadata, optional deep read-only flake validation, generation/kernel/initrd
 alignment, Nix daemon state, and database-lock visibility. Mutating rebuilds
 remain outside the diagnostic path.
 
-## Step 7: Hardware and Storage Matrix
+## Step 7: Hardware and Storage Matrix `[-]`
 
 Detect GPU vendor before vendor-specific checks. Add AMD/Intel paths. Distinguish
 SMART unsupported, inaccessible, command failure, and health failure. Support
@@ -172,6 +172,13 @@ actual ESP/root/Nix/temp filesystem detection.
 
 **Acceptance:** AMD/Intel systems get no NVIDIA warning; unsupported SMART is
 not disk failure; tests cover multiple filesystems and no-device cases.
+
+Current implementation includes vendor-aware NVIDIA/AMD/Intel applicability,
+SMART unsupported/error/health distinctions, battery detection, filesystem
+applicability, and an optional Noctalia integration. Remaining work includes
+full multi-device SMART/NVMe/SATA coverage, richer AMD/Intel renderer checks,
+storage-matrix fixtures, and Noctalia upstream health/report integration when
+its CLI exposes a stable structured doctor interface.
 
 ## Step 8: Network and Time Diagnostics
 

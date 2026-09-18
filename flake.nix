@@ -11,7 +11,7 @@
       packages = forEachSystem (pkgs: {
         default = pkgs.stdenvNoCC.mkDerivation {
           pname = "nixos-doctor";
-          version = "1.0.0";
+          version = "1.1.0";
           src = ./.;
           dontBuild = true;
           installPhase = ''
